@@ -50,6 +50,9 @@ def process_account_relationships(df):
             if parent_row.empty:
                 # Assign UK entity if in Europe and no .com or USA entity
                 parent_row = group[(group['Billing Country'].isin(['United Kingdom', 'Europe']))]
+            if parent_row.empty:
+                # Use tiebreaker logic based on Number of Contacts or Age of Record
+                parent_row = group.sort_values(by=['Number of Contacts', 'Creation Date'], ascending=[False, True]).iloc[:1]
             if not parent_row.empty:
                 parent_id = parent_row.iloc[0]['Account ID']
                 df.loc[group.index, 'Outcome'] = 'Child'
