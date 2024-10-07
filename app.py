@@ -103,7 +103,7 @@ if uploaded_file is not None:
             st.download_button(label="Download Processed Accounts CSV", data=csv, file_name='processed_accounts.csv', mime='text/csv')
 
             # Provide an option to run fuzzy matching as a separate step
-            if st.button("Run Fuzzy Matching on Accounts with No Domain"):
+            if st.button("Run Fuzzy Matching on Accounts with No Domain", key='fuzzy_matching'):
                 with st.spinner('Running fuzzy matching... Please wait...'):
                     time.sleep(1)  # Simulating delay
 
