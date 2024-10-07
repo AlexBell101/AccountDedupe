@@ -22,6 +22,7 @@ if uploaded_file is not None:
     created_date_col = st.sidebar.selectbox("Select Created Date Column", options=columns, index=columns.index('Created Date') if 'Created Date' in columns else 0)
     closed_opps_col = st.sidebar.selectbox("Select Closed Opportunities Column", options=columns, index=columns.index('# of Closed Opportunities') if '# of Closed Opportunities' in columns else 0)
     open_opps_col = st.sidebar.selectbox("Select Open Opportunities Column", options=columns, index=columns.index('# of Open Opportunities') if '# of Open Opportunities' in columns else 0)
+    contacts_col = st.sidebar.selectbox("Select Total Contacts Column", options=columns, index=columns.index('Total Contacts') if 'Total Contacts' in columns else 0)
 
     # Option to enable fuzzy matching on account names
     fuzzy_match = st.sidebar.checkbox("Enable Fuzzy Match on Name", value=False)
@@ -58,20 +59,15 @@ if uploaded_file is not None:
                     # Prioritize the '.com' version of the root domain as the parent if available
                     parent_row = group[group['Domain Suffix'].str.endswith('com')]
 
+                    if parent_row.empty:
+                        # Use tiebreaker logic based on Total Contacts or Age of Record
+                        parent_row = group.sort_values(by=[contacts_col, created_date_col], ascending=[False, True]).iloc[:1]
+                    
                     if not parent_row.empty:
-                        # Assign the '.com' domain as the parent explicitly
                         parent_id = parent_row.iloc[0][account_id_col]
                         df.loc[group.index, 'Outcome'] = 'Child'
                         df.loc[parent_row.index, 'Outcome'] = 'Parent'
                         df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
-                    else:
-                        # If no '.com' domain is available, select the oldest account as the parent
-                        parent_row = group.sort_values(by=[created_date_col]).iloc[:1]
-                        if not parent_row.empty:
-                            parent_id = parent_row.iloc[0][account_id_col]
-                            df.loc[group.index, 'Outcome'] = 'Child'
-                            df.loc[parent_row.index, 'Outcome'] = 'Parent'
-                            df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
 
             # Merge logic: Same account name but no domain, with another having a domain
             merge_condition = df[domain_col].isna() & df[account_name_col].notna()
