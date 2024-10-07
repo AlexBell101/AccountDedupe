@@ -1,130 +1,71 @@
-# account_processing_streamlit.py
-
 import streamlit as st
 import pandas as pd
-from difflib import SequenceMatcher
-import re
-from io import BytesIO
 
-def extract_domain_root_and_suffix(domain):
-    """
-    Extracts the domain root and suffix.
-    
-    Parameters:
-    domain (str): The domain of the account.
+# Title of the Streamlit app
+st.title('Account Deduplication and Relationship Management')
 
-    Returns:
-    tuple: (root, suffix) of the domain.
-    """
-    if pd.isna(domain):
+# File uploader for users to upload their CSV file
+uploaded_file = st.file_uploader("Upload Account CSV", type=["csv"])
+
+if uploaded_file is not None:
+    # Load the uploaded CSV file
+    df = pd.read_csv(uploaded_file)
+
+    # Extract domain root and suffix
+    def extract_domain_root_and_suffix(domain):
+        if pd.isna(domain):
+            return None, None
+        parts = domain.split('.')
+        if len(parts) >= 2:
+            return parts[0], '.'.join(parts[1:])
         return None, None
-    parts = domain.split('.')
-    if len(parts) >= 2:
-        return parts[-2], parts[-1]
-    return None, None
 
-def clean_domain(domain):
-    """
-    Cleans the domain by removing special characters like hyphens.
-    
-    Parameters:
-    domain (str): The domain of the account.
+    # Apply domain extraction to the dataframe
+    df['Root Domain'], df['Domain Suffix'] = zip(*df['Domain'].apply(extract_domain_root_and_suffix))
 
-    Returns:
-    str: The cleaned domain.
-    """
-    return re.sub(r'[-_]', '', domain) if isinstance(domain, str) else domain
-
-def domain_similarity(domain1, domain2):
-    """
-    Calculate similarity between two domains.
-    
-    Parameters:
-    domain1 (str): The first domain.
-    domain2 (str): The second domain.
-
-    Returns:
-    float: The similarity ratio between the two domains.
-    """
-    return SequenceMatcher(None, domain1, domain2).ratio()
-
-def fuzzy_name_match(name1, name2):
-    """
-    Calculate similarity between two account names.
-    
-    Parameters:
-    name1 (str): The first account name.
-    name2 (str): The second account name.
-
-    Returns:
-    float: The similarity ratio between the two account names.
-    """
-    return SequenceMatcher(None, name1, name2).ratio()
-
-def process_account_relationships(df):
-    """
-    Processes parent-child relationships, duplicates, merges, and deletions for a list of accounts.
-    
-    Parameters:
-    df (DataFrame): The DataFrame containing account data.
-
-    Returns:
-    DataFrame: The updated DataFrame with parent-child relationships and outcome analysis.
-    """
-    # Apply domain root and suffix extraction
-    df['Domain Root'], df['Domain Suffix'] = zip(*df['Domain'].apply(extract_domain_root_and_suffix))
-    df['Cleaned Domain'] = df['Domain'].apply(clean_domain)
-
-    # Group by Domain Root to establish Parent-Child relationships
-    grouped = df.groupby('Domain Root')
-
-    # Initialize new columns for outcome and parent/merge targets
+    # Initialize outcome columns
     df['Outcome'] = 'No Action'
     df['Proposed Parent ID'] = None
     df['Merge Target ID'] = None
 
-    for _, group in grouped:
+    # Group by Root Domain to ensure strict matching within the same domain family
+    grouped = df.groupby('Root Domain')
+
+    # Parent-child relationship logic, strictly using root domain
+    for root_domain, group in grouped:
         if len(group) > 1:
-            # Assign .com domain (without country suffix) as the parent if available
-            parent_row = group[group['Domain'].str.match(r'^.*\.com$')]
-            if parent_row.empty:
-                # Assign USA entity as the parent if no .com domain
-                parent_row = group[group['Billing Country'] == 'United States']
-            if parent_row.empty:
-                # Assign UK entity if in Europe and no .com or USA entity
-                parent_row = group[(group['Billing Country'].isin(['United Kingdom', 'Europe']))]
-            if parent_row.empty:
-                # Use tiebreaker logic based on Total Contacts or Age of Record
-                parent_row = group.sort_values(by=['Total Contacts', 'Created Date'], ascending=[False, True]).iloc[:1]
-            if parent_row.empty:
-                # Use domain similarity as the final tiebreaker, followed by oldest account
-                similarity_scores = group['Cleaned Domain'].apply(lambda x: domain_similarity(group['Cleaned Domain'].iloc[0], x))
-                most_similar_index = similarity_scores.idxmax()
-                parent_row = group.loc[[most_similar_index]]
-            if parent_row.empty:
-                # As a last resort, choose the oldest account by Created Date
-                parent_row = group.sort_values(by=['Created Date']).iloc[:1]
+            # Prioritize the '.com' version of the root domain as the parent if available
+            parent_row = group[group['Domain Suffix'].str.endswith('com')]
+
             if not parent_row.empty:
+                # Assign the '.com' domain as the parent explicitly
                 parent_id = parent_row.iloc[0]['Account ID']
                 df.loc[group.index, 'Outcome'] = 'Child'
                 df.loc[parent_row.index, 'Outcome'] = 'Parent'
                 df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
+            else:
+                # If no '.com' domain is available, select the oldest account as the parent
+                parent_row = group.sort_values(by=['Created Date']).iloc[:1]
+                if not parent_row.empty:
+                    parent_id = parent_row.iloc[0]['Account ID']
+                    df.loc[group.index, 'Outcome'] = 'Child'
+                    df.loc[parent_row.index, 'Outcome'] = 'Parent'
+                    df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
 
-    # Handling Duplicates, Merges, and Deletions
-    # Mark for Merge: Same account name but no domain, with another having a domain
+    # Merge logic: Same account name but no domain, with another having a domain
     merge_condition = df['Domain'].isna() & df['Account Name'].notna()
     potential_merge = df.loc[merge_condition]
+    domain_accounts = df[df['Domain'].notna() & df['Account Name'].notna()]
 
-    # Create a dictionary to quickly look up merge targets by account name using fuzzy matching
+    # Create a dictionary to quickly look up merge targets by account name using exact match
     merge_target_dict = {}
     for idx, row in potential_merge.iterrows():
-        for account_name, account_id in df[df['Domain'].notna()][['Account Name', 'Account ID']].values:
-            if fuzzy_name_match(row['Account Name'], account_name) > 0.8:
-                merge_target_dict[row['Account Name']] = account_id
-                break
+        match = domain_accounts[domain_accounts['Account Name'] == row['Account Name']]
+        if not match.empty:
+            merge_target_dict[row['Account ID']] = match.iloc[0]['Account ID']
 
-    # Apply merge logic using vectorized approach
-    df.loc[merge_condition, 'Merge Target ID'] = df.loc[merge_condition, 'Account Name'].map(merge_target_dict)
+    # Apply merge logic
+    df.loc[merge_condition, 'Merge Target ID'] = df.loc[merge_condition, 'Account ID'].map(merge_target_dict)
     df.loc[merge_condition & df['Merge Target ID'].notna(), 'Outcome'] = 'Merge'
 
     # Mark for Deletion: No domain, no website, no opportunities
@@ -134,39 +75,16 @@ def process_account_relationships(df):
         (df['# of Closed Opportunities'] == 0) &
         (df['# of Open Opportunities'] == 0)
     )
-    matching_accounts = df[df['Domain'].notna()].set_index('Account Name').index
-    df.loc[deletion_condition & ~df['Account Name'].isin(matching_accounts), 'Outcome'] = 'Delete'
+    df.loc[deletion_condition, 'Outcome'] = 'Delete'
 
-    return df
+    # Display the updated dataframe
+    st.write("Processed Accounts:")
+    st.dataframe(df)
 
-def main():
-    """
-    Main function to run the Streamlit application.
-    """
-    st.title("Account Relationship Processor")
+    # Provide an option to download the processed dataframe
+    @st.cache_data
+    def convert_df_to_csv(df):
+        return df.to_csv(index=False).encode('utf-8')
 
-    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-
-    if uploaded_file is not None:
-        # Load the CSV file
-        df = pd.read_csv(uploaded_file, encoding='latin1')
-
-        # Process the account relationships
-        df_processed = process_account_relationships(df)
-
-        # Display the processed DataFrame
-        st.write("### Processed Account Relationships", df_processed)
-
-        # Allow users to download the processed file
-        buffer = BytesIO()
-        df_processed.to_csv(buffer, index=False)
-        buffer.seek(0)
-        st.download_button(
-            label="Download Processed CSV",
-            data=buffer,
-            file_name="processed_accounts.csv",
-            mime="text/csv"
-        )
-
-if __name__ == "__main__":
-    main()
+    csv = convert_df_to_csv(df)
+    st.download_button(label="Download Processed Accounts CSV", data=csv, file_name='processed_accounts.csv', mime='text/csv')
