@@ -1,8 +1,10 @@
-# account_processing.py
+# account_processing_streamlit.py
 
+import streamlit as st
 import pandas as pd
 from difflib import SequenceMatcher
 import re
+from io import BytesIO
 
 def extract_domain_root_and_suffix(domain):
     """
@@ -83,41 +85,30 @@ def process_account_relationships(df):
 
     for _, group in grouped:
         if len(group) > 1:
-            print(f"Processing group with Domain Root: {group['Domain Root'].iloc[0]}")
             # Assign .com domain (without country suffix) as the parent if available
             parent_row = group[group['Domain'].str.match(r'^.*\.com$')]
-            if not parent_row.empty:
-                print(f"Parent assigned based on .com domain: {parent_row['Domain'].iloc[0]}")
             if parent_row.empty:
                 # Assign USA entity as the parent if no .com domain
                 parent_row = group[group['Billing Country'] == 'United States']
-                if not parent_row.empty:
-                    print(f"Parent assigned based on USA entity: {parent_row['Account Name'].iloc[0]}")
             if parent_row.empty:
                 # Assign UK entity if in Europe and no .com or USA entity
                 parent_row = group[(group['Billing Country'].isin(['United Kingdom', 'Europe']))]
-                if not parent_row.empty:
-                    print(f"Parent assigned based on UK/Europe entity: {parent_row['Account Name'].iloc[0]}")
             if parent_row.empty:
                 # Use tiebreaker logic based on Total Contacts or Age of Record
                 parent_row = group.sort_values(by=['Total Contacts', 'Created Date'], ascending=[False, True]).iloc[:1]
-                print(f"Parent assigned based on tiebreaker (Total Contacts or Age): {parent_row['Account Name'].iloc[0]}")
             if parent_row.empty:
                 # Use domain similarity as the final tiebreaker, followed by oldest account
                 similarity_scores = group['Cleaned Domain'].apply(lambda x: domain_similarity(group['Cleaned Domain'].iloc[0], x))
                 most_similar_index = similarity_scores.idxmax()
                 parent_row = group.loc[[most_similar_index]]
-                print(f"Parent assigned based on domain similarity: {parent_row['Domain'].iloc[0]}")
             if parent_row.empty:
                 # As a last resort, choose the oldest account by Created Date
                 parent_row = group.sort_values(by=['Created Date']).iloc[:1]
-                print(f"Parent assigned as the oldest account by Created Date: {parent_row['Account Name'].iloc[0]}")
             if not parent_row.empty:
                 parent_id = parent_row.iloc[0]['Account ID']
                 df.loc[group.index, 'Outcome'] = 'Child'
                 df.loc[parent_row.index, 'Outcome'] = 'Parent'
                 df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
-                print(f"Final parent for group: {parent_row['Account Name'].iloc[0]}\n")
 
     # Handling Duplicates, Merges, and Deletions
     # Mark for Merge: Same account name but no domain, with another having a domain
@@ -148,25 +139,34 @@ def process_account_relationships(df):
 
     return df
 
-def main(input_file, output_file):
+def main():
     """
-    Main function to process accounts from an input CSV file and save the output to another CSV file.
-    
-    Parameters:
-    input_file (str): Path to the input CSV file.
-    output_file (str): Path to the output CSV file.
+    Main function to run the Streamlit application.
     """
-    # Load the CSV file
-    df = pd.read_csv(input_file, encoding='latin1')
+    st.title("Account Relationship Processor")
 
-    # Process the account relationships
-    df_processed = process_account_relationships(df)
+    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
-    # Save the processed DataFrame to a new CSV file
-    df_processed.to_csv(output_file, index=False)
+    if uploaded_file is not None:
+        # Load the CSV file
+        df = pd.read_csv(uploaded_file, encoding='latin1')
+
+        # Process the account relationships
+        df_processed = process_account_relationships(df)
+
+        # Display the processed DataFrame
+        st.write("### Processed Account Relationships", df_processed)
+
+        # Allow users to download the processed file
+        buffer = BytesIO()
+        df_processed.to_csv(buffer, index=False)
+        buffer.seek(0)
+        st.download_button(
+            label="Download Processed CSV",
+            data=buffer,
+            file_name="processed_accounts.csv",
+            mime="text/csv"
+        )
 
 if __name__ == "__main__":
-    # Example usage
-    input_file = "input_accounts.csv"
-    output_file = "output_accounts.csv"
-    main(input_file, output_file)
+    main()
