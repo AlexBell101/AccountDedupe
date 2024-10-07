@@ -66,6 +66,19 @@ if uploaded_file is not None:
                         df.loc[parent_row.index, 'Outcome'] = 'Parent'
                         df.loc[group.index.difference(parent_row.index), 'Proposed Parent ID'] = parent_id
 
+            # Match accounts with no domain but having a website domain as children to accounts with matching domain
+            website_condition = df[domain_col].isna() & df[website_col].notna()
+            potential_website_merge = df.loc[website_condition]
+            for idx, row in potential_website_merge.iterrows():
+                # Extract domain root and suffix from the website
+                website_root, website_suffix = extract_domain_root_and_suffix(row[website_col])
+                matching_domain = df[(df[domain_col].notna()) & (df['Root Domain'] == website_root) & (df['Domain Suffix'] == website_suffix)]
+                if not matching_domain.empty:
+                    parent_id = matching_domain.iloc[0][account_id_col]
+                    df.at[idx, 'Proposed Parent ID'] = parent_id
+                    df.at[idx, 'Outcome'] = 'Child'
+                    df.loc[matching_domain.index, 'Outcome'] = 'Parent'
+
             # Merge logic: Same account name but no domain, with another having a domain
             merge_condition = df[domain_col].isna() & df[account_name_col].notna()
             potential_merge = df.loc[merge_condition]
